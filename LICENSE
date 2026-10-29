@@ -1,0 +1,27 @@
+        DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE
+                    Version 2, December 2004
+
+ Copyright (C) 2004 Sam Hocevar <sam@hocevar.net>
+
+ Everyone is permitted to copy and distribute verbatim or modified
+ copies of this license document, and changing it is allowed as long
+ as the name is changed.
+
+            DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE
+   TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION
+
+  0. You just DO WHAT THE FUCK YOU WANT TO.
+
+-------------------------------------------------------------------------
+
+             本项目的代码以 WTFPL v2 授权，做什么都行。
+
+-------------------------------------------------------------------------
+
+例外：程序内嵌的 Terracotta 二进制（联机内核）未修改、原样分发，
+仍受其上游 AGPL-3.0 约束。WTFPL 只覆盖本项目自己写的代码，不能替别人松绑。
+许可全文可在程序内「更多 -> 关于与鸣谢」查看，或见
+https://github.com/burningtnt/Terracotta/blob/main/LICENSE
+
+本程序按"现状"提供，不附带任何担保。删档了、崩了、把存档搞没了，
+作者不负责——这条不是法律套话，是真的。

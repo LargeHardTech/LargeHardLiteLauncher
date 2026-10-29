@@ -1,0 +1,85 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <PublishAot>true</PublishAot>
+    <StripSymbols>true</StripSymbols>
+    <AssemblyName>LargeHardLiteLauncher</AssemblyName>
+    <RootNamespace>LargeHardLiteLauncher</RootNamespace>
+    <!-- 项目刻意使用 TG 静态门面 (Application.Init/Instance), 屏蔽过时告警 -->
+    <!-- SelfTest 反射驱动 TG 内部主循环, trim 分析告警在此屏蔽 (仅 selftest 路径可达) -->
+    <NoWarn>$(NoWarn);CS0618;IL2026;IL2075</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Terminal.Gui" Version="2.5.0" />
+  </ItemGroup>
+
+  <!--
+    内嵌 Terracotta（陶瓦联机）二进制 + AGPL-3.0 许可证全文。
+    AGPL-3.0 允许以二进制形式分发，条件是附带许可证并提供源码位置
+    （见「更多 → 关于与鸣谢」里的说明）。我们只是把它解压成独立进程再通过
+    HTTP 调用，属于聚合分发，不链接、不修改，本项目自身仍按原许可证发布。
+    LogicalName 固定，避免 AOT 下按名字找资源时受程序集名前缀影响。
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\terracotta.zip" LogicalName="terracotta.zip" />
+    <EmbeddedResource Include="Resources\TERRACOTTA-LICENSE.txt" LogicalName="TERRACOTTA-LICENSE.txt" />
+  </ItemGroup>
+
+  <!--
+    Release（= 发布产物）：完全剔除开发期自测脚手架。
+    1) 定义 PUBLISH_BUILD，Program.cs 里被 #if !PUBLISH_BUILD 包住的测试入口整段消失
+    2) Tests\ 目录下的自测文件根本不参与编译
+    Debug 构建保持原样，uitest / vmtest / selftest 这些参数照旧可用。
+  -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DefineConstants>$(DefineConstants);PUBLISH_BUILD</DefineConstants>
+    <!-- 体积优化：去掉不需要的运行时特性 -->
+    <EventSourceSupport>false</EventSourceSupport>
+    <MetadataUpdaterSupport>false</MetadataUpdaterSupport>
+    <HttpActivityPropagationSupport>false</HttpActivityPropagationSupport>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+    <IlcOptimizationPreference>Size</IlcOptimizationPreference>
+    <TrimmerRemoveSymbols>true</TrimmerRemoveSymbols>
+    <!-- .NET 堆栈：崩溃分析靠游戏日志文本，不靠托管堆栈；自己的日志已有上下文 -->
+    <StackTraceSupport>false</StackTraceSupport>
+    <IlcFoldIdenticalMethodBodies>true</IlcFoldIdenticalMethodBodies>
+    <!-- 不生成调试符号：StripSymbols 已经把 exe 里的符号剥了，但 pdb 还是会被拷进
+         publish 目录（实测 71.9 MB！）。发布产物只需要那一个 exe -->
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(Configuration)' == 'Release'">
+    <Compile Remove="Tests\**\*.cs" />
+  </ItemGroup>
+
+  <!--
+    注：NativeAOT 的 .pdb（70+ MB）是 ILCompiler 直接写进 publish 目录的，
+    不走 MSBuild 的 ResolvedFileToPublish 清单，所以 Target 剔不掉。
+    用 scripts\publish.bat 发布，它会顺手删掉。
+  -->
+
+  <!--
+    libonigwrap.dll（528 KB）是 Onigwrap 包的原生库，而 Onigwrap 只被
+    TextMateSharp（Terminal.Gui 的语法高亮）使用。本项目所有 TextView 都是纯文本，
+    从不设置 SyntaxHighlighting，所以整条 Onigwrap/TextMate 链路在 ILC 裁剪时
+    就没了 —— 实测发布出来的 exe 里搜不到任何 onigwrap / TextMate 字符串，
+    也就永远不会去加载这个 dll（删掉后启动与全部功能实测正常）。
+
+    如果将来要用语法高亮（CodeView、Markdown 渲染、TextView.SyntaxHighlighting），
+    删掉下面这个 Target 即可恢复分发。
+  -->
+  <Target Name="DropUnusedOnigwrap" AfterTargets="ComputeFilesToPublish">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+                             Condition="'%(Filename)' == 'libonigwrap'" />
+    </ItemGroup>
+  </Target>
+
+</Project>

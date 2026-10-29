@@ -1,0 +1,36 @@
+# ---- WorkBuddy 会话数据（含记忆、缓存、日志，别进仓库）----
+.workbuddy/
+
+# ---- 构建产物 ----
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# ---- 发布 / 打包中间文件 ----
+publish/
+*.pdb
+*.ilk
+*.obj
+*.lib
+*.exp
+
+# ---- 运行日志与临时文件 ----
+build.log
+selftest.log
+st_stdout.log
+*.log
+!Resources/**/*.log
+*.tmp
+
+# ---- 编辑器 / 系统 ----
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# ---- 本机测试产物 ----
+*.mrpack
