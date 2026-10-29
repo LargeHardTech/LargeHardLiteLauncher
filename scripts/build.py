@@ -67,15 +67,23 @@ def main():
     action = sys.argv[1]
     extra = sys.argv[2:]
 
+    # --no-restore：这台机器上 NuGet restore 会报 "path1 null"（SDK 被沙箱搞坏），
+    # 依赖没变时直接用 obj/project.assets.json 跳过还原。
+    # 但刚 clone 的仓库没有这个文件，那时必须让 dotnet 自己还原，否则直接失败。
+    assets = os.path.join(PROJ, "obj", "project.assets.json")
+    no_restore = ["--no-restore"] if os.path.exists(assets) else []
+    if not no_restore:
+        print("[build.py] 没找到 obj/project.assets.json，本次会让 dotnet 先做 restore")
+    else:
+        print("[build.py] 已有 project.assets.json，跳过 restore")
+
     if action == "build":
-        # --no-restore：这个环境里 NuGet restore 会报 "path1 null"（SDK 被沙箱搞坏），
-        # 依赖没变时可以直接用 obj/project.assets.json 跳过还原
-        cmd = [DOTNET, "build", "--no-restore"] + extra
+        cmd = [DOTNET, "build"] + no_restore + extra
     elif action == "publish":
         # IlcUseEnvironmentalTools：跳过 findvcvarsall.bat 探测（沙箱拦注册表 → 探测失败），
         # 直接用我们 env 里塞好的 MSVC / SDK 路径
         cmd = [DOTNET, "publish", "-c", "Release", "-r", "win-x64", "--self-contained",
-               "--no-restore", "-p:IlcUseEnvironmentalTools=true"] + extra
+               "-p:IlcUseEnvironmentalTools=true"] + no_restore + extra
     else:
         print(f"不认识的动作: {action}")
         return 1
