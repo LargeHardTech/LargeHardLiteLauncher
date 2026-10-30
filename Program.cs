@@ -970,12 +970,49 @@ internal static class Program
         Check("空白被跳过", !items.Any(x => x.Trim().Length == 0));
         Check("总数正确", items.Count == 5, $"(实际 {items.Count})");
 
-        Console.Error.WriteLine("[echo] 2) 未配置讨论号时走内置");
+        Console.Error.WriteLine("[echo] 2) 未配置数据源时应报错（不再有内置兜底）");
         var cfg = new Core.LauncherConfig();
-        var builtin = await Core.EchoHole.LoadAsync(cfg).ConfigureAwait(false);
-        Check("回退到内置", builtin.Items.Count == Core.EchoHole.Builtin.Length, builtin.Source);
+        try
+        {
+            await Core.EchoHole.FetchAsync(cfg, null, CancellationToken.None).ConfigureAwait(false);
+            Check("未配置时抛异常", false, "(没有抛)");
+        }
+        catch (Core.EchoHole.EchoException ex)
+        {
+            Check("未配置时抛异常", true, ex.Message);
+        }
 
-        Console.Error.WriteLine("[echo] 3) 真实接口（github/roadmap #1014，公开讨论）");
+        Console.Error.WriteLine("[echo] 3) 错误路径：讨论号不存在");
+        try
+        {
+            var bad = new Core.LauncherConfig { EchoRepo = "github/roadmap", EchoDiscussion = 98765432 };
+            await Core.EchoHole.FetchAsync(bad, null, CancellationToken.None).ConfigureAwait(false);
+            Check("404 被识别为「不存在」", false, "(没有抛)");
+        }
+        catch (Core.EchoHole.EchoException ex)
+        {
+            Check("404 被识别为「不存在」", ex.Message.Contains("不存在", StringComparison.Ordinal), ex.Message);
+        }
+
+        Console.Error.WriteLine("[echo] 4) 错误路径：用户取消");
+        try
+        {
+            var cancelCfg = new Core.LauncherConfig { EchoRepo = "github/roadmap", EchoDiscussion = 1014 };
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+            await Core.EchoHole.FetchAsync(cancelCfg, null, cts.Token).ConfigureAwait(false);
+            Check("取消时抛 OperationCanceledException", false, "(没有抛)");
+        }
+        catch (OperationCanceledException)
+        {
+            Check("取消时抛 OperationCanceledException", true);
+        }
+        catch (Exception ex)
+        {
+            Check("取消时抛 OperationCanceledException", false, ex.GetType().Name);
+        }
+
+        Console.Error.WriteLine("[echo] 5) 真实接口（github/roadmap #1014，公开讨论）");
         try
         {
             var live = new Core.LauncherConfig { EchoRepo = "github/roadmap", EchoDiscussion = 1014 };
@@ -994,20 +1031,68 @@ internal static class Program
             Console.Error.WriteLine($"[echo]   SKIP 网络不可达: {ex.Message}");
         }
 
-        Console.Error.WriteLine("[echo] 4) 当前配置（config.json）");
+        Console.Error.WriteLine("[echo] 6) 当前配置（config.json）");
         var real = Core.LauncherConfig.Load();
         Console.Error.WriteLine($"[echo]   仓库 {Core.EchoHole.RepoOf(real)}  讨论 #{real.EchoDiscussion}  "
-                                + (Core.EchoHole.IsConfigured(real) ? "(已配置)" : "(未配置，走内置)"));
+                                + (Core.EchoHole.IsConfigured(real) ? "(已配置)" : "(未配置)"));
         if (Core.EchoHole.IsConfigured(real))
         {
-            var r = await Core.EchoHole.LoadAsync(real).ConfigureAwait(false);
-            Console.Error.WriteLine($"[echo]   来源: {r.Source}");
-            foreach (var it in r.Items.Take(3))
-                Console.Error.WriteLine($"[echo]     · {it}");
-            Check("真实配置能取到内容", r.Items.Count > 0, $"{r.Items.Count} 条");
+            try
+            {
+                var items2 = await Core.EchoHole.FetchAsync(real, null, CancellationToken.None).ConfigureAwait(false);
+                foreach (var it in items2.Take(3))
+                    Console.Error.WriteLine($"[echo]     · {it}");
+                Check("真实配置能取到内容", items2.Count > 0, $"{items2.Count} 条");
+            }
+            catch (Exception ex)
+            {
+                Check("真实配置能取到内容", false, ex.Message);
+            }
         }
 
         Console.Error.WriteLine($"[echo] === {pass} 通过 / {fail} 失败 ===");
+    }
+
+    /// <summary>
+    /// 任务栏流程验证：清掉缓存后提交一个拉取任务，等它跑完，检查状态、日志、缓存。
+    /// 不初始化 Application，验证的是 TaskManager + EchoHole 这一段。
+    /// </summary>
+    private static async Task RunEchoTaskTest()
+    {
+        var cfg = Core.LauncherConfig.Load();
+        if (!Core.EchoHole.IsConfigured(cfg))
+        {
+            Console.Error.WriteLine("[echotask] 配置里没有讨论号，跳过");
+            return;
+        }
+
+        var cache = Path.Combine(Core.LauncherConfig.RootDir, "cache", "echoes.json");
+        try
+        {
+            if (File.Exists(cache))
+                File.Delete(cache);
+        }
+        catch
+        {
+            // 删不掉就带着缓存跑，最多是走了缓存分支
+        }
+        Console.Error.WriteLine($"[echotask] 缓存已清除，开始拉取 {Core.EchoHole.RepoOf(cfg)} #{cfg.EchoDiscussion}");
+
+        var task = Core.TaskManager.Submit("拉取回声洞投稿", async (t, ct) =>
+        {
+            var items = await Core.EchoHole.FetchAsync(cfg, t, ct).ConfigureAwait(false);
+            Console.Error.WriteLine($"[echotask] body 里拿到 {items.Count} 条");
+        });
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (task is not null && !task.IsDone && sw.ElapsedMilliseconds < 30000)
+            await Task.Delay(100).ConfigureAwait(false);
+
+        Console.Error.WriteLine($"[echotask] 状态: {task?.Status}  错误: \"{task?.Error}\"  耗时 {sw.ElapsedMilliseconds}ms");
+        Console.Error.WriteLine($"[echotask] 缓存已写回: {File.Exists(cache)}");
+        Console.Error.WriteLine("[echotask] 任务日志:");
+        foreach (var line in (task?.LogText ?? "").Split('\n'))
+            Console.Error.WriteLine("  " + line);
     }
 
     private static void RunUpdateDialogTest()
@@ -1672,6 +1757,12 @@ internal static class Program
         if (args.Contains("--echotest"))
         {
             RunEchoTest().GetAwaiter().GetResult();
+            return;
+        }
+
+        if (args.Contains("--echotask"))
+        {
+            RunEchoTaskTest().GetAwaiter().GetResult();
             return;
         }
 

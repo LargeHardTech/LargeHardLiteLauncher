@@ -4,15 +4,14 @@ using System.Text.Json;
 namespace LargeHardLiteLauncher.Core;
 
 /// <summary>
-/// 回声洞的内容源。
+/// 回声洞的取数逻辑：从仓库讨论帖的评论里读句子。
 /// <para>
-/// 默认用内置句子；配置了 GitHub 讨论帖编号后，从该讨论的评论里取。
-/// GitHub 官方只给 Discussions 开放了 GraphQL 接口（必须带 token），这里用的是未收录进官方
-/// REST 描述的端点 <c>/repos/{repo}/discussions/{n}/comments</c>：匿名可读，限流 60 次/小时。
+/// GitHub 只给 Discussions 开放了 GraphQL（必须带 token），这里用的是未收录进官方 REST 描述的
+/// 端点 <c>/repos/{repo}/discussions/{n}/comments</c>：匿名可读，限流 60 次/小时。
 /// </para>
 /// <para>
-/// 接口变动或断网时静默回退（缓存 → 内置句子），不影响页面显示。
-/// 缓存 6 小时内不重复请求，写 `<数据目录>/cache/echoes.json`。
+/// 没有内置兜底。拉不到就抛 <see cref="EchoException"/>，由界面显示失败原因。
+/// 缓存只用于 6 小时内不重复请求，过期后照样请求；请求失败不会拿旧缓存顶替。
 /// </para>
 /// </summary>
 public static class EchoHole
@@ -21,23 +20,11 @@ public static class EchoHole
 
     private static readonly TimeSpan Ttl = TimeSpan.FromHours(6);
 
-    /// <summary>网络不可用、或还没建讨论帖时的兜底内容</summary>
-    public static readonly string[] Builtin =
+    /// <summary>取数失败，Message 可直接显示给用户</summary>
+    public sealed class EchoException : Exception
     {
-        "能正常运行的代码,就不要为了风格去改它。",
-        "先保证可用,再考虑美观。",
-        "内存不足时优先增加分配,其次才是更换硬件。",
-        "启动失败应先查看日志,日志含义不清时再使用崩溃分析。",
-        "修改整合包之前,建议先备份存档。",
-        "更换 Mod 前后各做一次存档备份,可以避免绝大多数损失。",
-        "F3 是联机页,不是刷新。",
-        "把 jar 拖到程序图标上可以直接打开启动 JAR 页。",
-        "导出整合包时启用联网匹配,可以显著减小体积。",
-        "Java 版本不匹配会引发大量难以定位的错误。",
-    };
-
-    /// <summary>取到的结果。<paramref name="Source"/> 是给界面显示的一行来源说明</summary>
-    public sealed record Result(List<string> Items, string Source);
+        public EchoException(string message) : base(message) { }
+    }
 
     public static string RepoOf(LauncherConfig cfg) =>
         string.IsNullOrWhiteSpace(cfg.EchoRepo)
@@ -52,59 +39,96 @@ public static class EchoHole
 
     private static string CachePath => Path.Combine(LauncherConfig.RootDir, "cache", "echoes.json");
 
+    /// <summary>缓存还在有效期内就直接给，不发请求</summary>
+    public static bool TryGetCached(LauncherConfig cfg, out List<string> items)
+    {
+        items = new List<string>();
+        if (!IsConfigured(cfg))
+            return false;
+
+        var cached = ReadCache(ApiUrl(cfg));
+        if (cached is null || DateTime.UtcNow - cached.At >= Ttl)
+            return false;
+
+        items = cached.Items;
+        return true;
+    }
+
     /// <summary>
-    /// 拿回声列表。优先用未过期的缓存；否则请求 GitHub，失败就退回缓存或内置句子。
-    /// 不抛异常，调用方拿到的一定是能显示的列表。
+    /// 取回声列表。缓存有效时直接返回，否则请求 GitHub。
+    /// 失败抛 <see cref="EchoException"/>（消息可直接显示），用户取消时抛 OperationCanceledException。
     /// </summary>
-    public static async Task<Result> LoadAsync(LauncherConfig cfg, CancellationToken ct = default)
+    public static async Task<List<string>> FetchAsync(
+        LauncherConfig cfg, TaskItem? task, CancellationToken ct)
     {
         if (!IsConfigured(cfg))
-            return new Result(Builtin.ToList(), "内置");
+            throw new EchoException("还没有配置展示来源");
+
+        if (TryGetCached(cfg, out var cached))
+        {
+            task?.LogLine($"使用缓存（{cached.Count} 条）");
+            return cached;
+        }
 
         var url = ApiUrl(cfg);
-        var cached = ReadCache(url);
+        var repo = RepoOf(cfg);
+        task?.LogLine($"请求 {repo} 的讨论 #{cfg.EchoDiscussion}");
 
-        if (cached is not null && DateTime.UtcNow - cached.At < Ttl)
-            return new Result(cached.Items, $"GitHub · {cached.Items.Count} 条");
-
+        string json;
         try
         {
             using var http = Net.CreateClient(TimeSpan.FromSeconds(10));
             http.DefaultRequestHeaders.Add("User-Agent", "LargeHardLiteLauncher");
 
-            using var resp = await http.GetAsync(url, ct).ConfigureAwait(false);
+            using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct)
+                .ConfigureAwait(false);
+
             if (!resp.IsSuccessStatusCode)
-            {
-                // 403 是限流，404 是讨论号不对 / 仓库没开 Discussions
-                return Fallback(cached, $"GitHub 返回 {(int)resp.StatusCode}");
-            }
+                throw new EchoException(DescribeStatus((int)resp.StatusCode, cfg));
 
-            var json = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            var items = ParseComments(json);
-            if (items.Count == 0)
-                return Fallback(cached, "讨论里还没有内容");
-
-            WriteCache(url, items);
-            return new Result(items, $"GitHub · {items.Count} 条");
+            json = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
+            throw; // 用户点的停止
+        }
+        catch (OperationCanceledException)
+        {
+            throw new EchoException("连接超时（10 秒）");
+        }
+        catch (EchoException)
+        {
             throw;
         }
-        catch
+        catch (HttpRequestException)
         {
-            return Fallback(cached, "拉取失败");
+            throw new EchoException("无法连接 GitHub，检查网络或代理");
         }
+        catch (Exception ex)
+        {
+            throw new EchoException($"请求失败：{ex.Message}");
+        }
+
+        var items = ParseComments(json);
+        if (items.Count == 0)
+            throw new EchoException("讨论里还没有投稿");
+
+        WriteCache(url, items);
+        task?.LogLine($"拿到 {items.Count} 条");
+        return items;
     }
 
-    private static Result Fallback(Cache? cached, string why) =>
-        cached is not null
-            ? new Result(cached.Items, $"GitHub 缓存 · {cached.Items.Count} 条（{why}）")
-            : new Result(Builtin.ToList(), $"内置（{why}）");
+    private static string DescribeStatus(int code, LauncherConfig cfg) => code switch
+    {
+        401 => "GitHub 拒绝匿名访问（返回 401）",
+        403 => "GitHub 接口限流（每小时 60 次），稍后再试",
+        404 => $"讨论 #{cfg.EchoDiscussion} 不存在，检查仓库和编号",
+        _ => $"GitHub 返回 {code}",
+    };
 
     /// <summary>
     /// 从评论列表 JSON 里抽出句子：每条取第一行有效文本。
-    /// 跳过机器人、纯链接、纯图片、代码块。
+    /// 跳过机器人、纯链接、纯图片、表格、代码块。
     /// </summary>
     public static List<string> ParseComments(string json)
     {
@@ -130,7 +154,7 @@ public static class EchoHole
         }
         catch
         {
-            // 返回格式变了就当没取到，交给调用方回退
+            // 格式变了当没取到，调用方会报"讨论里还没有投稿"
         }
         return list;
     }

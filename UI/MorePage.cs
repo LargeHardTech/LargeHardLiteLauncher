@@ -24,9 +24,10 @@ public class MorePage : PageBase
     private readonly View _content;
     private readonly List<string> _shownNav = new();
 
-    // 回声洞：内容可由 GitHub 讨论帖提供，这几个字段保存当前列表与来源说明
-    private List<string> _echoes = EchoHole.Builtin.ToList();
-    private string _echoSource = "内置";
+    // 回声洞：内容全部来自 GitHub 讨论帖，不做内置兜底
+    private List<string> _echoes = new();
+    private string? _echoError;
+    private bool _echoRunning;
     private Label? _echoLabel;
     private FrameView? _echoBox;
 
@@ -324,7 +325,7 @@ public class MorePage : PageBase
         // ---- 回声洞：点 label 或整个 groupbox 都刷新 ----
         var echoBox = new FrameView
         {
-            Title = $" 回声洞 · {_echoSource} ",
+            Title = $" 回声洞 · {EchoStatus()} ",
             X = 0,
             Y = 8,
             Width = Dim.Fill(),
@@ -334,7 +335,7 @@ public class MorePage : PageBase
 
         var echoLabel = new Label
         {
-            Text = PickEcho(null),
+            Text = EchoText(),
             X = 1,
             Y = 1,
             Width = Dim.Fill(1),
@@ -348,6 +349,16 @@ public class MorePage : PageBase
 
         void Roll()
         {
+            if (_echoRunning)
+                return;
+
+            // 没内容（还没拉到 / 拉失败）→ 重试；有内容 → 换一句
+            if (_echoes.Count == 0)
+            {
+                StartEchoFetch();
+                return;
+            }
+
             echoLabel.Text = PickEcho(echoLabel.Text);
             echoLabel.SetNeedsDraw();
         }
@@ -373,7 +384,7 @@ public class MorePage : PageBase
     private string PickEcho(string? current)
     {
         if (_echoes.Count == 0)
-            return EchoHole.Builtin[0];
+            return "";
 
         var next = _echoes[Random.Shared.Next(_echoes.Count)];
         if (current is not null && next == current && _echoes.Count > 1)
@@ -381,47 +392,130 @@ public class MorePage : PageBase
         return next;
     }
 
-    /// <summary>
-    /// 每次进页面都尝试刷新一次。内部有 6 小时缓存，正常情况不会重复请求。
-    /// 取不到内容时静默保留内置句子，不弹错误。
-    /// </summary>
-    public override void OnPageEnter()
-    {
-        _ = RefreshEchoesAsync();
-    }
+    private string EchoStatus() =>
+        _echoRunning ? "拉取中"
+        : _echoError is not null ? "失败"
+        : _echoes.Count > 0 ? $"GitHub · {_echoes.Count} 条"
+        : "空";
 
-    private async Task RefreshEchoesAsync()
-    {
-        var result = await EchoHole.LoadAsync(Config).ConfigureAwait(false);
+    /// <summary>创建控件时用的初始文字</summary>
+    private string EchoText() =>
+        _echoRunning ? "正在从 GitHub 拉取…"
+        : _echoError is not null ? $"拉取失败：{_echoError}（点击重试）"
+        : _echoes.Count > 0 ? PickEcho(null)
+        : "还没有内容（点击重试）";
 
+    /// <summary>把当前状态刷到控件上。<paramref name="reroll"/> 为 true 时顺带换一句。</summary>
+    private void ApplyEchoState(bool reroll)
+    {
         try
         {
-            Application.Invoke(Apply);
+            if (_echoBox is not null)
+                _echoBox.Title = $" 回声洞 · {EchoStatus()} ";
+
+            if (_echoLabel is not null)
+            {
+                if (_echoRunning)
+                    _echoLabel.Text = "正在从 GitHub 拉取…";
+                else if (_echoError is not null)
+                    _echoLabel.Text = $"拉取失败：{_echoError}（点击重试）";
+                else if (_echoes.Count == 0)
+                    _echoLabel.Text = "还没有内容（点击重试）";
+                else if (reroll || string.IsNullOrEmpty(_echoLabel.Text))
+                    _echoLabel.Text = PickEcho(null);
+            }
+
+            _echoBox?.SetNeedsDraw();
+            _echoLabel?.SetNeedsDraw();
         }
         catch
         {
-            // 测试或退出过程中 Application 可能已经关掉，忽略
+            // 控件可能已销毁，忽略
+        }
+    }
+
+    /// <summary>
+    /// 进页面时：缓存有效就直接显示（不打扰任务栏），否则提交一个可见的拉取任务。
+    /// </summary>
+    public override void OnPageEnter()
+    {
+        if (EchoHole.TryGetCached(Config, out var cached))
+        {
+            _echoes = cached;
+            _echoError = null;
+            _echoRunning = false;
+            ApplyEchoState(reroll: true);
+            return;
         }
 
-        void Apply()
+        if (!EchoHole.IsConfigured(Config))
+        {
+            _echoError = "没有配置数据源（config.json 的 EchoDiscussion）";
+            _echoRunning = false;
+            ApplyEchoState(false);
+            return;
+        }
+
+        StartEchoFetch();
+    }
+
+    /// <summary>在任务栏里跑一次拉取。失败原因同时写进任务日志和回声洞。</summary>
+    private void StartEchoFetch()
+    {
+        if (_echoRunning)
+            return;
+
+        _echoRunning = true;
+        _echoError = null;
+        ApplyEchoState(false);
+
+        TaskManager.Submit("拉取回声洞投稿", async (task, ct) =>
         {
             try
             {
-                _echoes = result.Items;
-                _echoSource = result.Source;
-
-                if (_echoBox is not null)
-                    _echoBox.Title = $" 回声洞 · {_echoSource} ";
-                if (_echoLabel is not null)
-                    _echoLabel.Text = PickEcho(null);
-
-                _echoBox?.SetNeedsDraw();
-                _echoLabel?.SetNeedsDraw();
+                var items = await EchoHole.FetchAsync(Config, task, ct).ConfigureAwait(false);
+                InvokeOnUi(() =>
+                {
+                    _echoes = items;
+                    _echoError = null;
+                    _echoRunning = false;
+                    ApplyEchoState(reroll: true);
+                });
             }
-            catch
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                // 控件可能已销毁，忽略即可
+                InvokeOnUi(() =>
+                {
+                    _echoRunning = false;
+                    _echoError = "已取消";
+                    ApplyEchoState(false);
+                });
+                throw; // 任务栏标成「已取消」
             }
+            catch (Exception ex)
+            {
+                InvokeOnUi(() =>
+                {
+                    _echoes = new List<string>();
+                    _echoRunning = false;
+                    _echoError = ex.Message;
+                    ApplyEchoState(false);
+                });
+                throw; // 任务栏标成「失败」，异常消息也会进任务日志
+            }
+        });
+    }
+
+    /// <summary>Application 可能已经关掉（测试 / 退出过程中），这种情况直接忽略。</summary>
+    private static void InvokeOnUi(Action action)
+    {
+        try
+        {
+            Application.Invoke(action);
+        }
+        catch
+        {
+            // ignore
         }
     }
 
