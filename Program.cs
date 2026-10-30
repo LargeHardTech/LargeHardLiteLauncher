@@ -914,6 +914,102 @@ internal static class Program
     /// Mod 更新对话框的布局冒烟：造几条假更新，开框 2 秒后自动关。
     /// 只验布局/勾选逻辑不崩，不下载任何东西。
     /// </summary>
+    /// <summary>
+    /// 回声洞自测：先验解析规则（Markdown 清理、跳过机器人/纯链接/图片/代码块），
+    /// 再用一个真实的公开讨论拉一次，确认接口和解析都能跑通。
+    /// </summary>
+    private static async Task RunEchoTest()
+    {
+        var pass = 0;
+        var fail = 0;
+        void Check(string name, bool ok, string detail = "")
+        {
+            if (ok)
+            {
+                pass++;
+                Console.Error.WriteLine($"[echo]   OK   {name} {detail}");
+            }
+            else
+            {
+                fail++;
+                Console.Error.WriteLine($"[echo]   FAIL {name} {detail}");
+            }
+        }
+
+        Console.Error.WriteLine("[echo] 1) 解析规则");
+
+        const string fake = """
+        [
+          {"user":{"login":"a","type":"User"},"body":"**能跑就别动它。**"},
+          {"user":{"login":"dependabot[bot]","type":"Bot"},"body":"机器人发的内容"},
+          {"user":{"login":"b","type":"User"},"body":"> 引用形式的一句话\n\n正文还剩一段"},
+          {"user":{"login":"c","type":"User"},"body":"- 列表项也当句子\n- 第二项"},
+          {"user":{"login":"d","type":"User"},"body":"https://example.com/only-a-link"},
+          {"user":{"login":"e","type":"User"},"body":"[带链接的文字](https://x) 结尾"},
+          {"user":{"login":"f","type":"User"},"body":"![图片](https://x/y.png)"},
+          {"user":{"login":"g","type":"User"},"body":"```\ncode line\n```"},
+          {"user":{"login":"h","type":"User"},"body":"1. 有序列表第一项"},
+          {"user":{"login":"i","type":"User"},"body":"   "}
+        ]
+        """;
+
+        var items = Core.EchoHole.ParseComments(fake);
+        Console.Error.WriteLine($"[echo]   解析出 {items.Count} 条：");
+        foreach (var it in items)
+            Console.Error.WriteLine($"[echo]     · {it}");
+
+        Check("粗体标记被去掉", items.Contains("能跑就别动它。"));
+        Check("机器人被跳过", !items.Contains("机器人发的内容"));
+        Check("引用符号被去掉", items.Contains("引用形式的一句话"));
+        Check("列表符号被去掉", items.Contains("列表项也当句子"));
+        Check("纯链接被跳过", !items.Any(x => x.StartsWith("http", StringComparison.Ordinal)));
+        Check("保留链接文字", items.Contains("带链接的文字 结尾"));
+        Check("图片被跳过", !items.Any(x => x.Contains("图片", StringComparison.Ordinal)));
+        Check("代码块被跳过", !items.Any(x => x.Contains("code line", StringComparison.Ordinal)));
+        Check("有序列表被清理", items.Contains("有序列表第一项"));
+        Check("空白被跳过", !items.Any(x => x.Trim().Length == 0));
+        Check("总数正确", items.Count == 5, $"(实际 {items.Count})");
+
+        Console.Error.WriteLine("[echo] 2) 未配置讨论号时走内置");
+        var cfg = new Core.LauncherConfig();
+        var builtin = await Core.EchoHole.LoadAsync(cfg).ConfigureAwait(false);
+        Check("回退到内置", builtin.Items.Count == Core.EchoHole.Builtin.Length, builtin.Source);
+
+        Console.Error.WriteLine("[echo] 3) 真实接口（github/roadmap #1014，公开讨论）");
+        try
+        {
+            var live = new Core.LauncherConfig { EchoRepo = "github/roadmap", EchoDiscussion = 1014 };
+            using var http = Core.Net.CreateClient(TimeSpan.FromSeconds(15));
+            http.DefaultRequestHeaders.Add("User-Agent", "LargeHardLiteLauncher-Test");
+            var json = await http.GetStringAsync(Core.EchoHole.ApiUrl(live)).ConfigureAwait(false);
+            var liveItems = Core.EchoHole.ParseComments(json);
+            Console.Error.WriteLine($"[echo]   拿到 {liveItems.Count} 条，前两条：");
+            foreach (var it in liveItems.Take(2))
+                Console.Error.WriteLine($"[echo]     · {it}");
+            Check("真实接口有内容", liveItems.Count > 0);
+            Check("每条都是单行", liveItems.All(x => !x.Contains('\n')));
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[echo]   SKIP 网络不可达: {ex.Message}");
+        }
+
+        Console.Error.WriteLine("[echo] 4) 当前配置（config.json）");
+        var real = Core.LauncherConfig.Load();
+        Console.Error.WriteLine($"[echo]   仓库 {Core.EchoHole.RepoOf(real)}  讨论 #{real.EchoDiscussion}  "
+                                + (Core.EchoHole.IsConfigured(real) ? "(已配置)" : "(未配置，走内置)"));
+        if (Core.EchoHole.IsConfigured(real))
+        {
+            var r = await Core.EchoHole.LoadAsync(real).ConfigureAwait(false);
+            Console.Error.WriteLine($"[echo]   来源: {r.Source}");
+            foreach (var it in r.Items.Take(3))
+                Console.Error.WriteLine($"[echo]     · {it}");
+            Check("真实配置能取到内容", r.Items.Count > 0, $"{r.Items.Count} 条");
+        }
+
+        Console.Error.WriteLine($"[echo] === {pass} 通过 / {fail} 失败 ===");
+    }
+
     private static void RunUpdateDialogTest()
     {
         Application.Init();
@@ -1570,6 +1666,12 @@ internal static class Program
         if (args.Contains("--upddlgtest"))
         {
             RunUpdateDialogTest();
+            return;
+        }
+
+        if (args.Contains("--echotest"))
+        {
+            RunEchoTest().GetAwaiter().GetResult();
             return;
         }
 

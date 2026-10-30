@@ -21,23 +21,14 @@ public class MorePage : PageBase
     /// <summary>反馈 / 新功能投票都先指到这个（PCL 是官方论坛，我们先用 GitHub）</summary>
     private const string GithubUrl = "https://github.com/LargeHardTech";
 
-    /// <summary>回声洞（PCL 的彩蛋，每次进页面随机一句）</summary>
-    private static readonly string[] Echoes =
-    {
-        "能正常运行的代码,就不要为了风格去改它。",
-        "先保证可用,再考虑美观。",
-        "内存不足时优先增加分配,其次才是更换硬件。",
-        "启动失败应先查看日志,日志含义不清时再使用崩溃分析。",
-        "修改整合包之前,建议先备份存档。",
-        "更换 Mod 前后各做一次存档备份,可以避免绝大多数损失。",
-        "F3 是联机页,不是刷新。",
-        "把 jar 拖到程序图标上可以直接打开启动 JAR 页。",
-        "导出整合包时启用联网匹配,可以显著减小体积。",
-        "Java 版本不匹配会引发大量难以定位的错误。",
-    };
-
     private readonly View _content;
     private readonly List<string> _shownNav = new();
+
+    // 回声洞：内容可由 GitHub 讨论帖提供，这几个字段保存当前列表与来源说明
+    private List<string> _echoes = EchoHole.Builtin.ToList();
+    private string _echoSource = "内置";
+    private Label? _echoLabel;
+    private FrameView? _echoBox;
 
     public MorePage(LauncherConfig config) : base(config, $" {Loc.T("tab.more")} ")
     {
@@ -333,7 +324,7 @@ public class MorePage : PageBase
         // ---- 回声洞：点 label 或整个 groupbox 都刷新 ----
         var echoBox = new FrameView
         {
-            Title = " 回声洞 ",
+            Title = $" 回声洞 · {_echoSource} ",
             X = 0,
             Y = 8,
             Width = Dim.Fill(),
@@ -343,7 +334,7 @@ public class MorePage : PageBase
 
         var echoLabel = new Label
         {
-            Text = Echoes[Random.Shared.Next(Echoes.Length)],
+            Text = PickEcho(null),
             X = 1,
             Y = 1,
             Width = Dim.Fill(1),
@@ -351,13 +342,13 @@ public class MorePage : PageBase
             CanFocus = true,
         };
 
+        // 异步刷新回来时要用到这两个引用
+        _echoBox = echoBox;
+        _echoLabel = echoLabel;
+
         void Roll()
         {
-            // 随机到和当前同一句时再抽一次，否则看着像没反应
-            var next = Echoes[Random.Shared.Next(Echoes.Length)];
-            if (next == echoLabel.Text && Echoes.Length > 1)
-                next = Echoes[(Array.IndexOf(Echoes, next) + 1) % Echoes.Length];
-            echoLabel.Text = next;
+            echoLabel.Text = PickEcho(echoLabel.Text);
             echoLabel.SetNeedsDraw();
         }
 
@@ -374,6 +365,64 @@ public class MorePage : PageBase
 
         echoBox.Add(echoLabel);
         _content.Add(toolBox, echoBox);
+    }
+
+    // ================= 回声洞内容 =================
+
+    /// <summary>随机抽一句。和当前显示的一样时顺延到下一句，否则看着像没反应。</summary>
+    private string PickEcho(string? current)
+    {
+        if (_echoes.Count == 0)
+            return EchoHole.Builtin[0];
+
+        var next = _echoes[Random.Shared.Next(_echoes.Count)];
+        if (current is not null && next == current && _echoes.Count > 1)
+            next = _echoes[(_echoes.IndexOf(next) + 1) % _echoes.Count];
+        return next;
+    }
+
+    /// <summary>
+    /// 每次进页面都尝试刷新一次。内部有 6 小时缓存，正常情况不会重复请求。
+    /// 取不到内容时静默保留内置句子，不弹错误。
+    /// </summary>
+    public override void OnPageEnter()
+    {
+        _ = RefreshEchoesAsync();
+    }
+
+    private async Task RefreshEchoesAsync()
+    {
+        var result = await EchoHole.LoadAsync(Config).ConfigureAwait(false);
+
+        try
+        {
+            Application.Invoke(Apply);
+        }
+        catch
+        {
+            // 测试或退出过程中 Application 可能已经关掉，忽略
+        }
+
+        void Apply()
+        {
+            try
+            {
+                _echoes = result.Items;
+                _echoSource = result.Source;
+
+                if (_echoBox is not null)
+                    _echoBox.Title = $" 回声洞 · {_echoSource} ";
+                if (_echoLabel is not null)
+                    _echoLabel.Text = PickEcho(null);
+
+                _echoBox?.SetNeedsDraw();
+                _echoLabel?.SetNeedsDraw();
+            }
+            catch
+            {
+                // 控件可能已销毁，忽略即可
+            }
+        }
     }
 
     // ================= 千万别点（学 PCL 的彩蛋）=================

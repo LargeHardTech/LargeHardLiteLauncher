@@ -77,7 +77,7 @@ Launch | Download | Multiplayer | JAR | Settings | More
 - **Multiplayer**: create and join rooms
 - **JAR**: standalone jar launching
 - **Settings**: account, Java, memory, isolation, download source, appearance, performance
-- **More**: guides, credits, small tools
+- **More**: guides, credits, small tools (including the echo hole, fed by a Discussions thread)
 
 ## Requirements
 
@@ -183,6 +183,9 @@ Game files and versions stay in the `.minecraft` directory and are not touched.
 - The launcher has no self-update; upgrading means replacing the exe
 - Single instance only; a second instance just shows a notice
 - Modpack import supports `.mrpack` only, CurseForge zip modpacks are not supported
+- The echo hole reads GitHub Discussions through an endpoint that is not part of the official
+  REST documentation (60 requests/hour anonymously); on failure it falls back to cache and
+  built-in lines
 
 ## FAQ
 

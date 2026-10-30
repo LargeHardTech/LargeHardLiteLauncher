@@ -158,6 +158,10 @@ public class LauncherConfig
     public string HomePageSource { get; set; } = "";
     /// <summary>显示启动器调试信息</summary>
     public bool ShowDebugInfo { get; set; } = false;
+    /// <summary>回声洞的数据源仓库 owner/repo（空 = 用内置默认仓库）</summary>
+    public string EchoRepo { get; set; } = "";
+    /// <summary>回声洞投稿讨论的编号（0 = 还没建，回退到内置句子）</summary>
+    public int EchoDiscussion { get; set; } = 0;
 
     private static string ConfigDir => RootDir;
 

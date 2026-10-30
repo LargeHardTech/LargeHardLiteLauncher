@@ -83,7 +83,7 @@ Lancement | Téléchargement | Multijoueur | JAR | Réglages | Plus
 - **JAR** : lancement autonome de jar
 - **Réglages** : compte, Java, mémoire, isolation, source de téléchargement, apparence,
   performances
-- **Plus** : guides, remerciements, petits outils
+- **Plus** : guides, remerciements, petits outils (dont le puits à échos, alimenté par un fil Discussions)
 
 ## Configuration requise
 
@@ -192,6 +192,9 @@ Les fichiers de jeu et les versions restent dans le répertoire `.minecraft` et 
 - Instance unique ; un second lancement affiche seulement un message
 - L'import de modpacks ne prend en charge que `.mrpack`, les modpacks zip de CurseForge ne
   sont pas pris en charge
+- Le puits à échos lit GitHub Discussions via un point d'accès absent de la documentation
+  REST officielle (60 requêtes/heure en anonyme) ; en cas d'échec, retour au cache puis aux
+  phrases intégrées
 
 ## Questions fréquentes
 
