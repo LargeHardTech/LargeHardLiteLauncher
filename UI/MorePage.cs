@@ -18,8 +18,14 @@ public class MorePage : PageBase
         "帮助", "关于与鸣谢", "百宝箱", "反馈", "新功能投票",
     };
 
-    /// <summary>反馈 / 新功能投票都先指到这个（PCL 是官方论坛，我们先用 GitHub）</summary>
-    private const string GithubUrl = "https://github.com/LargeHardTech";
+    /// <summary>仓库主页</summary>
+    private const string RepoUrl = "https://github.com/LargeHardTech/LargeHardLiteLauncher";
+
+    /// <summary>反馈走 issue</summary>
+    private const string IssueUrl = RepoUrl + "/issues";
+
+    /// <summary>新功能投票走讨论区,回声洞也从这里取内容</summary>
+    private const string DiscussUrl = RepoUrl + "/discussions";
 
     private readonly View _content;
     private readonly List<string> _shownNav = new();
@@ -30,6 +36,11 @@ public class MorePage : PageBase
     private bool _echoRunning;
     private Label? _echoLabel;
     private FrameView? _echoBox;
+
+    // 逐字显示的状态。_echoBusy 为 true 时点击无效（打字和闪烁期间）
+    private bool _echoBusy;
+    private string _echoFull = "";
+    private int _echoGen;
 
     public MorePage(LauncherConfig config) : base(config, $" {Loc.T("tab.more")} ")
     {
@@ -63,12 +74,20 @@ public class MorePage : PageBase
 
         void Activate(int idx)
         {
-            if (idx is 3 or 4)
+            if (idx == 3)
             {
-                // 反馈 / 新功能投票：直接开浏览器，内容区不动
-                OpenUrl(GithubUrl);
+                // 反馈：开 issue 列表
+                OpenUrl(IssueUrl);
                 return;
             }
+
+            if (idx == 4)
+            {
+                // 新功能投票：开讨论区，内容区不动
+                OpenUrl(DiscussUrl);
+                return;
+            }
+
             Render(idx);
         }
 
@@ -84,6 +103,10 @@ public class MorePage : PageBase
 
     private void Render(int idx)
     {
+        // 切页会把回声洞的控件一起移除，正在跑的动画必须停
+        _echoGen++;
+        _echoBusy = false;
+
         _content.RemoveAll();
         switch (idx)
         {
@@ -237,7 +260,7 @@ public class MorePage : PageBase
 
         var ghBtn = MkButton("GitHub", 1, 9);
         var logBtn = MkButton("打开日志", 14, 9);
-        ghBtn.Accepting += (_, _) => OpenUrl(GithubUrl);
+        ghBtn.Accepting += (_, _) => OpenUrl(RepoUrl);
         logBtn.Accepting += (_, _) => OpenFolder(Path.Combine(LauncherConfig.RootDir, "logs"));
         aboutBox.Add(ghBtn, logBtn);
 
@@ -346,10 +369,14 @@ public class MorePage : PageBase
         // 异步刷新回来时要用到这两个引用
         _echoBox = echoBox;
         _echoLabel = echoLabel;
+        _echoFull = echoLabel.Text ?? "";
+        _echoBusy = false;
+        _echoGen++;
 
         void Roll()
         {
-            if (_echoRunning)
+            // 打字或闪烁期间不接受点击
+            if (_echoRunning || _echoBusy)
                 return;
 
             // 没内容（还没拉到 / 拉失败）→ 重试；有内容 → 换一句
@@ -359,8 +386,7 @@ public class MorePage : PageBase
                 return;
             }
 
-            echoLabel.Text = PickEcho(echoLabel.Text);
-            echoLabel.SetNeedsDraw();
+            PlayEcho(PickEcho(_echoFull));
         }
 
         echoLabel.MouseEvent += (_, e) =>
@@ -392,6 +418,108 @@ public class MorePage : PageBase
         return next;
     }
 
+    /// <summary>
+    /// 逐字打出来，打完之后闪两下，闪完才放开点击。
+    /// 单个定时器跑状态机，被打断（换句 / 切页）时靠 _echoGen 让旧的那个自己退出。
+    /// </summary>
+    private void PlayEcho(string full)
+    {
+        var label = _echoLabel;
+        if (label is null || full.Length == 0)
+            return;
+
+        var gen = ++_echoGen;
+        _echoBusy = true;
+        _echoFull = full;
+
+        var shown = 0;
+        var phase = 0;   // 0 打字  1 灭  2 亮  3 灭  4 亮并结束
+        var wait = 0;    // 剩余等待的 tick 数
+
+        // 定时器跑得比两者都快，打字和闪烁各自用 wait 控制间隔
+        const int tickMs = 13;
+
+        try
+        {
+            label.Text = "";
+            label.SetNeedsDraw();
+        }
+        catch
+        {
+            _echoBusy = false;
+            return;
+        }
+
+        Application.AddTimeout(TimeSpan.FromMilliseconds(tickMs), () =>
+        {
+            if (gen != _echoGen)
+                return false;
+
+            try
+            {
+                if (wait > 0)
+                {
+                    wait--;
+                    return true;
+                }
+
+                switch (phase)
+                {
+                    case 0:
+                        shown++;
+                        // 别把代理对切两半，否则 emoji 变成半个方块
+                        if (shown < full.Length
+                            && char.IsHighSurrogate(full[shown - 1])
+                            && char.IsLowSurrogate(full[shown]))
+                            shown++;
+
+                        label.Text = full[..shown];
+                        label.SetNeedsDraw();
+
+                        if (shown >= full.Length)
+                        {
+                            phase = 1;
+                            wait = 13; // 约 180ms，留时间看清最后一个字
+                        }
+                        else
+                        {
+                            wait = 1; // 加本次 tick 共 26ms 一个字
+                        }
+                        break;
+
+                    case 1:
+                    case 3:
+                        label.Text = "";
+                        label.SetNeedsDraw();
+                        phase++;
+                        wait = 1; // 约 26ms
+                        break;
+
+                    case 2:
+                        label.Text = full;
+                        label.SetNeedsDraw();
+                        phase = 3;
+                        wait = 1; // 约 26ms
+                        break;
+
+                    default:
+                        label.Text = full;
+                        label.SetNeedsDraw();
+                        _echoBusy = false;
+                        return false;
+                }
+            }
+            catch
+            {
+                // 控件已销毁
+                _echoBusy = false;
+                return false;
+            }
+
+            return true;
+        });
+    }
+
     private string EchoStatus() =>
         _echoRunning ? "拉取中"
         : _echoError is not null ? "失败"
@@ -408,6 +536,10 @@ public class MorePage : PageBase
     /// <summary>把当前状态刷到控件上。<paramref name="reroll"/> 为 true 时顺带换一句。</summary>
     private void ApplyEchoState(bool reroll)
     {
+        // 状态变了就作废掉正在跑的动画
+        _echoGen++;
+        _echoBusy = false;
+
         try
         {
             if (_echoBox is not null)
@@ -416,13 +548,25 @@ public class MorePage : PageBase
             if (_echoLabel is not null)
             {
                 if (_echoRunning)
+                {
                     _echoLabel.Text = "正在从 GitHub 拉取…";
+                    _echoFull = "";
+                }
                 else if (_echoError is not null)
+                {
                     _echoLabel.Text = $"拉取失败：{_echoError}（点击重试）";
+                    _echoFull = "";
+                }
                 else if (_echoes.Count == 0)
+                {
                     _echoLabel.Text = "还没有内容（点击重试）";
-                else if (reroll || string.IsNullOrEmpty(_echoLabel.Text))
-                    _echoLabel.Text = PickEcho(null);
+                    _echoFull = "";
+                }
+                else if (reroll || string.IsNullOrEmpty(_echoFull))
+                {
+                    _echoFull = PickEcho(null);
+                    _echoLabel.Text = _echoFull;
+                }
             }
 
             _echoBox?.SetNeedsDraw();
